@@ -1,6 +1,5 @@
 import flet as ft
-import time
-import threading
+import asyncio
 
 def main(page: ft.Page):
     page.title = "Akura"
@@ -151,9 +150,6 @@ def main(page: ft.Page):
         else:
             page.update()
 
-    # FIX: page.update() is now correctly INSIDE toggle_play (it was
-    # accidentally dedented in your version, so it only ran once at
-    # startup instead of every time you pressed play/pause).
     def toggle_play(e=None):
         state["is_playing"] = not state["is_playing"]
 
@@ -504,14 +500,19 @@ def main(page: ft.Page):
         ], expand=True, spacing=0)
     )
 
-    # FIX: `page.call_from_thread` does not exist in Flet — Page has no
-    # such attribute, which is exactly the AttributeError you hit.
-    # Flet's supported pattern is simply calling page.update() (or
-    # control.update()) straight from a background thread, so `refresh()`
-    # is now just called directly instead of being wrapped in that call.
-    def timer_loop():
+    # FIX: Flet 1.0 uses a single-threaded async UI model. A raw
+    # threading.Thread calling control.update() from outside Flet's
+    # event loop is unsafe and silently fails - that's why the timeline
+    # never moved while playing, but "caught up" the instant page.update()
+    # was called from a real event handler (play/pause, next/prev).
+    #
+    # The fix is to run the ticking loop as an async task scheduled on
+    # Flet's own event loop via page.run_task(), using asyncio.sleep()
+    # instead of time.sleep(). This is Flet's officially documented
+    # pattern for self-updating background timers.
+    async def timer_loop():
         while True:
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
 
             if not state["is_playing"]:
                 continue
@@ -527,13 +528,11 @@ def main(page: ft.Page):
 
             progress_slider.value = state["progress"]
             time_current_text.value = format_seconds(state["progress"])
+            progress_slider.update()
+            time_current_text.update()
 
-            try:
-                progress_slider.update()
-                time_current_text.update()
-            except Exception as ex:
-                print("Timer UI update failed:", ex)
+    page.run_task(timer_loop)
 
-    threading.Thread(target=timer_loop, daemon=True).start()
-
-ft.app(target=main)
+# FIX: ft.app(target=main) is the pre-1.0 API. In Flet 1.0 the entry
+# point was renamed to ft.run(main).
+ft.run(main)
